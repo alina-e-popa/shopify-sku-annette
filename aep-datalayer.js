@@ -850,8 +850,8 @@
         client_value: this.customerData.totalSpent,
         client_orders: this.customerData.ordersCount,
         new_customer: this.customerData.ordersCount === 0,
-        customer_lifetime_value: this.customerData.totalSpent,
-        customer_lifetime_orders: this.customerData.ordersCount,
+        clv: this.customerData.totalSpent,
+        clo: this.customerData.ordersCount,
         google_business_vertical: "retail",
         dynx_pagetype: this.pageType.dynx,
         ecomm_pagetype: this.pageType.ecomm
