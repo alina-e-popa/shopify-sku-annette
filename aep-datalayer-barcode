@@ -214,15 +214,15 @@
             form.appendChild(hi);
           }
         };
-        ensure('properties[aep_item_id]');
-        ensure('properties[aep_barcode]');
+        ensure('properties[_aep_item_id]');
+        ensure('properties[_aep_barcode]');
 
         const variantInput = form.querySelector('[name="id"], [name="variant"]');
         const sync = ()=>{
           const vid = variantInput && (variantInput.value || variantInput.getAttribute('value'));
           const bc  = self.getBarcodeByVariantId(vid) || '';
-          form.querySelector('input[name="properties[aep_item_id]"]').value = bc;
-          form.querySelector('input[name="properties[aep_barcode]"]').value  = bc;
+          form.querySelector('input[name="properties[_aep_item_id]"]').value = bc;
+          form.querySelector('input[name="properties[_aep_barcode]"]').value  = bc;
         };
         if (variantInput) { variantInput.addEventListener('change', sync); sync(); }
       });
@@ -258,8 +258,8 @@
               const fd = init.body;
               const vid = fd.get('id') || fd.get('variant') || fd.get('items[0][id]');
               const bc  = this.getBarcodeByVariantId(vid) || '';
-              if (!fd.has('properties[aep_item_id]')) fd.append('properties[aep_item_id]', bc);
-              if (!fd.has('properties[aep_barcode]'))  fd.append('properties[aep_barcode]',  bc);
+              if (!fd.has('properties[_aep_item_id]')) fd.append('properties[_aep_item_id]', bc);
+              if (!fd.has('properties[_aep_barcode]'))  fd.append('properties[_aep_barcode]',  bc);
             }
             // JSON body
             else if (typeof init.body === 'string' && (init.headers && /application\/json/i.test(init.headers['Content-Type'] || init.headers['content-type'] || ''))) {
@@ -268,7 +268,7 @@
                 // shape 1: { id, quantity, properties? }
                 if (payload && payload.id) {
                   const bc = this.getBarcodeByVariantId(payload.id) || '';
-                  payload.properties = Object.assign({}, payload.properties, { aep_item_id: bc, aep_barcode: bc });
+                  payload.properties = Object.assign({}, payload.properties, { _aep_item_id: bc, _aep_barcode: bc });
                 }
                 // shape 2: { items:[ {id, quantity, properties?} ] }
                 if (payload && Array.isArray(payload.items)) {
@@ -276,7 +276,7 @@
                     const vid = item.id || item.variant_id;
                     const bc  = this.getBarcodeByVariantId(vid) || '';
                     return Object.assign({}, item, {
-                      properties: Object.assign({}, item.properties, { aep_item_id: bc, aep_barcode: bc })
+                      properties: Object.assign({}, item.properties, { _aep_item_id: bc, _aep_barcode: bc })
                     });
                   });
                 }
