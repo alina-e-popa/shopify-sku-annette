@@ -1,0 +1,186 @@
+/***************************************
+ * AEP – Customer Events (Checkout) – BARCODE FIRST
+ * item_id: BARCODE -> SKU -> product_id
+ ***************************************/
+const EVENT_PREFIX = 'aep_';
+const GTM_URL = 'https://www.googletagmanager.com';
+const GTM_ID  = 'GTM-5WGBKM9N';
+
+window.dataLayer = window.dataLayer || [];
+
+/* ========== Utils ========== */
+const normId = (id) => {
+  if (!id) return null;
+  const s = String(id);
+  const m = s.match(/(\d{5,})$/);
+  return m ? m[1] : s;
+};
+const sumItems = (items)=> {
+  try { return +items.reduce((t,i)=> t + (Number(i.price||0) * Number(i.quantity||0)), 0).toFixed(2); }
+  catch { return 0; }
+};
+const log = (name, payload) => {
+  const css1='background: DarkMagenta; color:#fff; border-radius:3px 0 0 3px; padding:3px 4px;';
+  const css2='background: DarkOrchid; color:#fff; border-radius:0 3px 3px 0; padding:3px 4px;';
+  console.log('%cGTM DataLayer Event:%c'+EVENT_PREFIX+name, css1, css2, payload);
+};
+async function sha256Hash(value){
+  try{
+    const data = new TextEncoder().encode(value || '');
+    const buf = await crypto.subtle.digest('SHA-256', data);
+    return Array.from(new Uint8Array(buf)).map(b=>('00'+b.toString(16)).slice(-2)).join('');
+  }catch(_){ return undefined; }
+}
+const toMap = (attrs)=>{
+  if (!attrs) return {};
+  if (Array.isArray(attrs)) {
+    const entries = attrs.map(a => [a?.key ?? a?.name, a?.value]).filter(kv => kv[0]);
+    try { return Object.fromEntries(entries); } catch { const m={}; entries.forEach(([k,v])=>m[k]=v); return m; }
+  }
+  return (typeof attrs === 'object') ? attrs : {};
+};
+const pageType = () => (/\/checkouts?\//.test(location.href) ? { dynx: 'conversionintent', ecomm: 'checkout' }
+  : { dynx: 'other',            ecomm: 'other' });
+
+/* ========== Rulează doar pe checkout ========== */
+if (/\/checkouts?\//.test(location.href)) {
+  // Bootstrap GTM în sandbox-ul Customer Events (o singură dată)
+  (function(w,d,s,l,i){
+    if (w.__aepCEGtmLoaded) return; w.__aepCEGtmLoaded = true;
+    w[l]=w[l]||[]; w[l].push({'gtm.start': new Date().getTime(), event:'gtm.js'});
+    var f=d.getElementsByTagName(s)[0], j=d.createElement(s), dl=l!='dataLayer'?'&l='+l:'';
+    j.async=true; j.src=`${GTM_URL}/gtm.js?id=${i}${dl}`; f.parentNode.insertBefore(j,f);
+  })(window,document,'script','dataLayer',GTM_ID);
+
+  const CE = (typeof Shopify !== 'undefined' && Shopify.analytics) ? Shopify.analytics : (typeof analytics !== 'undefined' ? analytics : null);
+  if (!CE) {
+    console.warn('Customer Events API not available on this page.');
+  } else {
+    CE.subscribe('page_viewed', (ev)=>{
+      const payload = { event: EVENT_PREFIX + 'page_view', page_location: ev?.context?.document?.location?.href || location.href };
+      dataLayer.push(payload); log('page_view', payload);
+    });
+
+    // GA4-style names în DL (le mapezi în GTM dacă vrei evenimentele native)
+    CE.subscribe('checkout_started',                 (ev)=> pushEcom('begin_checkout',           ev));
+    CE.subscribe('checkout_shipping_info_submitted', (ev)=> pushEcom('add_shipping_info',        ev));
+    CE.subscribe('payment_info_submitted',  (ev)=> pushEcom('add_payment_info',         ev)); // <- fix nume
+    CE.subscribe('checkout_completed',  (ev)=> pushEcom('purchase',                 ev));
+  }
+}
+
+/* ========== Builder payload GA4 (barcode-first) ========== */
+async function pushEcom(gtmName, ev){
+  const co = ev?.data?.checkout || {};
+  const pt = pageType();
+
+  /* 1) Customer info (hash-uit) */
+  const phone = co.phone;
+  const email = co.email;
+  const customerInfo = {
+    customer: {
+      first_name: co?.billingAddress?.firstName || co?.shippingAddress?.firstName,
+      last_name:  co?.billingAddress?.lastName  || co?.shippingAddress?.lastName,
+      email,
+      hash_email: email ? await sha256Hash(email) : undefined,
+      phone,
+      hash_phone: phone ? await sha256Hash(phone) : undefined,
+      address: co?.shippingAddress
+    }
+  };
+  dataLayer.push(customerInfo);
+
+  /* 2) Items — PRIORITATE proprietăți din cart: aep_item_id / aep_barcode */
+  const lineItems = co.lineItems || [];
+  const items = lineItems.map((li, index)=>{
+    // CE poate trimite fie "variant", fie "merchandise" (GraphQL Storefront API)
+    const v  = li?.variant || li?.merchandise || {};
+    const pv = v?.product || li?.product || {};
+    const props = toMap(li?.customAttributes || li?.properties || {});
+
+    // PRIORITY: properties -> native fields
+    const propBarcode   = props.aep_item_id ?? props.aep_barcode ?? props.barcode ?? null;
+    const nativeBarcode = v?.barcode ?? li?.barcode ?? null;
+    const barcode       = propBarcode ?? nativeBarcode;
+
+    const sku = v?.sku ?? li?.sku ?? null;
+
+    const productId = pv?.id ?? li?.product?.id ?? li?.productId;
+    const variantId = v?.id  ?? li?.variantId;
+
+    const title   = li?.title ?? pv?.title;
+    const variant = v?.title;
+    const brand   = pv?.vendor ?? pv?.vendorName;
+    const ptype   = pv?.type   ?? pv?.productType;
+
+    const price = Number(
+      (v?.price && v.price.amount) ??
+      (li?.price && li.price.amount) ??
+      li?.price ??
+      0
+    );
+    const qty = Number(li?.quantity || 1);
+
+    const item_id =
+      (barcode && String(barcode)) ||
+      (sku && String(sku)) ||
+      (normId(productId) || '');
+
+    const out = {
+      index,
+      item_id,
+      product_id: normId(productId),
+      variant_id: normId(variantId),
+      item_group_id: normId(productId),
+      item_name: title,
+      quantity: qty,
+      price,
+      discount: Number(li?.totalDiscount?.amount || 0)
+    };
+    if (ptype) out.item_category = ptype;
+    if (brand) out.item_brand    = brand;
+    if (variant && variant !== 'Default Title') out.item_variant = variant;
+    if (sku) out.sku = String(sku);
+    if (barcode) out.barcode = String(barcode); // pentru debug/rapoarte
+
+    return out;
+  });
+
+  /* 3) Ecommerce + DR payload */
+  const currency = co?.currencyCode || 'RON';
+  const ecommerce = {
+    currency,
+    items,
+    value: Number(co?.totalPrice?.amount ?? sumItems(items)),
+    tax:      (co?.totalTax?.amount             != null) ? Number(co.totalTax.amount) : undefined,
+    shipping: (co?.shippingLine?.price?.amount  != null) ? Number(co.shippingLine.price.amount) : undefined
+  };
+
+  const orderId = normId(co?.order?.id);
+  if (orderId) ecommerce.transaction_id = orderId;
+
+  const coupons = (co?.discountApplications || []).map(d=>d?.title).filter(Boolean);
+  if (coupons.length) ecommerce.coupon = coupons.join(',');
+
+  const payload = {
+    event: EVENT_PREFIX + gtmName,
+    page_location: ev?.context?.document?.location?.href || location.href,
+    ecommerce,
+    google_business_vertical: "retail",
+    dynx_pagetype: pt.dynx,
+    ecomm_pagetype: pt.ecomm
+  };
+
+  const dynamicRemarketing = {
+    value: ecommerce.value,
+    items: items.map(i => ({ id: i.item_id, google_business_vertical: "retail" }))
+  };
+
+  // push-uri ordonate (curățăm ecommerce)
+  dataLayer.push({ ecommerce: null });
+  dataLayer.push({ dynamicRemarketing: null });
+  dataLayer.push(payload);
+  dataLayer.push({ dynamicRemarketing });
+
+  log(gtmName, payload);
+}
