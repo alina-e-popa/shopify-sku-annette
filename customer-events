@@ -1,0 +1,198 @@
+/***************************************
+ * AEP – Customer Events (Checkout) - Enhanced
+ * item_id = SKU prioritar, parametri completi
+ ***************************************/
+const event_prefix = 'aep_';
+const gclidWithPageLocation = true;
+const GTM_container_url = 'https://www.googletagmanager.com';
+const GTM_container_id = 'GTM-5WGBKM9N';
+
+window.dataLayer = window.dataLayer || [];
+function gtag(){ dataLayer.push(arguments); }
+
+/* ========= Utils ========= */
+function normalizeId(id){
+  if(!id) return null;
+  const s = String(id);
+  const m = s.match(/(\d{5,})$/);
+  return m ? m[1] : s;
+}
+function eventLog(name, payload){
+  const css1='background: DarkMagenta; color:#fff; border-radius:3px 0 0 3px; padding:3px 4px;';
+  const css2='background: DarkOrchid; color:#fff; border-radius:0 3px 3px 0; padding:3px 4px;';
+  console.log('%cGTM DataLayer Event:%c'+event_prefix+name, css1, css2, payload);
+}
+function getPageLocation(ev){
+  let href = ev?.context?.document?.location?.href || window.location.href;
+  if(gclidWithPageLocation){
+    const parts = (`; ${document.cookie}`).split(`; _gcl_aw=`);
+    if(parts.length === 2){
+      const v = parts.pop().split(';').shift();
+      const gclid = v.split('.').pop();
+      href = href.includes('?') ? `${href}&gclid=${gclid}` : `${href}?gclid=${gclid}`;
+    }
+  }
+  return href;
+}
+async function sha256Hash(value){
+  const data = new TextEncoder().encode(value || '');
+  const buf = await crypto.subtle.digest('SHA-256', data);
+  return Array.from(new Uint8Array(buf)).map(b=>('00'+b.toString(16)).slice(-2)).join('');
+}
+function attributesToMap(attrs){
+  if (!attrs) return {};
+  if (Array.isArray(attrs)) {
+    const entries = attrs.map(a => [a?.key ?? a?.name, a?.value]).filter(kv => kv[0]);
+    try { return Object.fromEntries(entries); } catch { const m={}; entries.forEach(([k,v])=>m[k]=v); return m; }
+  }
+  return (typeof attrs === 'object') ? attrs : {};
+}
+function sumItemsValue(items){
+  try { return +items.reduce((t,i)=> t + (Number(i.price||0) * Number(i.quantity||0)), 0).toFixed(2); }
+  catch { return 0; }
+}
+
+/* ========= Customer Data Utils ========= */
+function getCustomerData(){
+  try {
+    const countryCode = localStorage.getItem('shopCountryCode') || '';
+    return {
+      totalSpent: 0,
+      ordersCount: 0,
+      countryCode: countryCode
+    };
+  } catch {
+    return { totalSpent: 0, ordersCount: 0, countryCode: '' };
+  }
+}
+
+function getPageType(){
+  const href = window.location.href;
+  if(/\/checkouts?\//.test(href)) {
+    return { dynx: 'conversionintent', ecomm: 'checkout' };
+  }
+  return { dynx: 'other', ecomm: 'other' };
+}
+
+/* ========= Rulează doar pe checkout ========= */
+if (/\/checkouts?\//.test(location.href)) {
+  (function(w,d,s,l,i){
+    w[l]=w[l]||[]; w[l].push({'gtm.start': new Date().getTime(), event:'gtm.js'});
+    var f=d.getElementsByTagName(s)[0], j=d.createElement(s), dl=l!='dataLayer'?'&l='+l:'';
+    j.async=true; j.src=GTM_container_url+'/gtm.js?id='+i+dl; f.parentNode.insertBefore(j,f);
+  })(window,document,'script','dataLayer',GTM_container_id);
+
+  analytics.subscribe('page_viewed', (ev)=>{
+    const payload = { event: event_prefix + 'page_view', page_location: getPageLocation(ev) };
+    dataLayer.push(payload); eventLog('page_view', payload);
+  });
+
+  analytics.subscribe('checkout_started',                 (ev)=> ecommercePush('begin_checkout',    ev));
+  analytics.subscribe('checkout_shipping_info_submitted', (ev)=> ecommercePush('add_shipping_info', ev));
+  analytics.subscribe('payment_info_submitted',           (ev)=> ecommercePush('add_payment_info',  ev));
+  analytics.subscribe('checkout_completed',               (ev)=> ecommercePush('purchase',          ev));
+}
+
+/* ========= GA4 - Enhanced ========= */
+async function ecommercePush(gtmName, ev){
+  const co = ev?.data?.checkout || {};
+  const customerData = getCustomerData();
+  const pageType = getPageType();
+
+  // 1) Customer (hash)
+  const phone = co.phone;
+  const email = co.email;
+  const customerInfo = {
+    customer: {
+      first_name: co?.billingAddress?.firstName || co?.shippingAddress?.firstName,
+      last_name:  co?.billingAddress?.lastName  || co?.shippingAddress?.lastName,
+      email, hash_email: email ? await sha256Hash(email) : undefined,
+      phone, hash_phone: phone ? await sha256Hash(phone) : undefined,
+      address: co?.shippingAddress
+    }
+  };
+  dataLayer.push(customerInfo);
+
+  // 2) Items din checkout - ALINIAT CU STOREFRONT
+  const lineItems = co.lineItems || [];
+  const items = lineItems.map((li, index)=>{
+    const attrsMap = attributesToMap(li?.customAttributes || li?.properties);
+    const aep = (attrsMap._aep_item_id || attrsMap.aep_item_id || '').toString().trim();
+
+    const productId = li?.variant?.product?.id || li?.product?.id || li?.merchandise?.product?.id || li?.productId;
+    const variantId = li?.variant?.id || li?.merchandise?.id || li?.variantId;
+    const sku       = li?.variant?.sku || li?.merchandise?.sku || li?.sku;
+    const title     = li?.title || li?.variant?.product?.title || li?.merchandise?.product?.title;
+    const variant   = li?.variant?.title || li?.merchandise?.title;
+    const brand     = li?.variant?.product?.vendor || li?.merchandise?.product?.vendor;
+    const ptype     = li?.variant?.product?.type   || li?.merchandise?.product?.type;
+    const price     = Number(li?.variant?.price?.amount || li?.price?.amount || li?.price || 0);
+    const quantity  = Number(li?.quantity || 1);
+    
+    const item_id = (sku && String(sku).trim()) || normalizeId(productId) || '';
+    
+    const dataLayerItem = {
+      index: index,
+      item_id: item_id,
+      product_id: normalizeId(productId),
+      variant_id: normalizeId(variantId),
+      item_group_id: normalizeId(productId),
+      item_name: title,
+      quantity: quantity,
+      price: price,
+      discount: Number(li?.totalDiscount?.amount || 0)
+    };
+
+    if(ptype) dataLayerItem.item_category = ptype;
+    if(brand) dataLayerItem.item_brand = brand;
+    if(variant && variant !== 'Default Title') dataLayerItem.item_variant = variant;
+    if(sku) dataLayerItem.sku = sku;
+
+    return dataLayerItem;
+  });
+
+  const currency = co?.currencyCode || 'RON';
+  const ecommerce = {
+    currency: currency,
+    items: items
+  };
+  
+  ecommerce.value    = Number(co?.totalPrice?.amount ?? sumItemsValue(items));
+  ecommerce.tax      = (co?.totalTax?.amount != null) ? Number(co.totalTax.amount) : undefined;
+  ecommerce.shipping = (co?.shippingLine?.price?.amount != null) ? Number(co.shippingLine.price.amount) : undefined;
+
+  const orderId = normalizeId(co?.order?.id);
+  if (orderId) ecommerce.transaction_id = orderId;
+
+  const coupons = (co?.discountApplications || []).map(d=>d?.title).filter(Boolean);
+  if (coupons.length) ecommerce.coupon = coupons.join(',');
+
+  const payload = { 
+    event: event_prefix + gtmName, 
+    page_location: getPageLocation(ev), 
+    ecommerce: ecommerce,
+    client_value: customerData.totalSpent,
+    client_orders: customerData.ordersCount,
+    new_customer: customerData.ordersCount === 0,
+    clv: customerData.totalSpent,
+    clo: customerData.ordersCount,
+    google_business_vertical: "retail",
+    dynx_pagetype: pageType.dynx,
+    ecomm_pagetype: pageType.ecomm
+  };
+
+  const dynamicRemarketing = {
+    value: ecommerce.value,
+    items: items.map(item => ({ 
+      id: item.item_id, 
+      google_business_vertical: "retail" 
+    }))
+  };
+
+  dataLayer.push({ ecommerce: null });
+  dataLayer.push({ dynamicRemarketing: null });
+  dataLayer.push(payload);
+  dataLayer.push({ dynamicRemarketing: dynamicRemarketing });
+  
+  eventLog(gtmName, Object.assign({}, payload, customerInfo, {dynamicRemarketing}));
+}
