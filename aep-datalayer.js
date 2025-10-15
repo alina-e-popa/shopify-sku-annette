@@ -818,7 +818,6 @@
     ecommerceDataLayer(event, data) {
       const self = this;
       dataLayer.push({ 'ecommerce': null });
-
       const dataLayerData = {
         event: this.eventPrefix + event,
         ecommerce: {
