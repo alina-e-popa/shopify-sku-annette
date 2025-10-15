@@ -1,7 +1,8 @@
 <script>
 /**
- * aep-dataLayer v2.1 (barcode-first)
+ * aep-dataLayer v2.2 (barcode-first)
  * Enhanced ecommerce tracking for Shopify cu item_id = barcode -> sku -> product_id
+ * Sleek theme compatible (covers JSON and FormData /cart/add flows)
  */
 (function() {
 
@@ -10,61 +11,45 @@
       window.dataLayer = window.dataLayer || [];
       this.eventPrefix = 'aep_';
 
-      // schema vizibilitate
+      /* ===== Vizibilitate / config ===== */
       this.dataSchema = {
         ecommerce: { show: true },
         dynamicRemarketing: { show: true, business_vertical: 'retail' }
       };
 
-      // add to wishlist selectors
+      /* ===== Selectoare utile (poți personaliza) ===== */
       this.addToWishListSelectors = {
         'addWishListIcon': '',
         'gridItemSelector': '',
         'productLinkSelector': 'a[href*="/products/"]'
       };
-
-      // quick view selectors
       this.quickViewSelector = {
         'quickViewElement': '',
         'gridItemSelector': '',
         'productLinkSelector': 'a[href*="/products/"]'
       };
-
-      // mini cart button selector
       this.miniCartButton = [ 'a[href="/cart"]' ];
       this.miniCartAppersOn = 'click';
-
-      // direct checkout button selector
       this.shopifyDirectCheckoutButton = [ '.shopify-payment-button' ];
-
-      // dacă Add to Cart redirecționează la /cart
       this.isAddToCartRedirect = false;
-      // dacă increment/decrement/remove în cart NU reîncarcă pagina
       this.isAjaxCartIncrementDecrement = true;
 
-      // === date de bază din Shopify ===
-      this.cart = {{ cart | json }};
-      this.countryCode = "{{ shop.address.country_code }}";
-      this.storeURL = "{{ shop.secure_url }}";
+      /* ===== Date Shopify ===== */
+      this.cart       = {{ cart | json }};
+      this.countryCode= "{{ shop.address.country_code }}";
+      this.storeURL   = "{{ shop.secure_url }}";
       try { localStorage.setItem('shopCountryCode', this.countryCode); } catch(e){}
 
-      // Customer data pentru parametri
-      this.customerData = {
-        isLoggedIn: false,
-        totalSpent: 0,
-        ordersCount: 0
-      };
-
+      this.customerData = { isLoggedIn:false, totalSpent:0, ordersCount:0 };
       {% if customer %}
         this.customerData.isLoggedIn = true;
         this.customerData.totalSpent = {{ customer.total_spent | divided_by: 100.0 }};
-        this.customerData.ordersCount = {{ customer.orders_count | default: 0 }};
+        this.customerData.ordersCount= {{ customer.orders_count | default: 0 }};
       {% endif %}
 
-      // Page type pentru dynx_pagetype și ecomm_pagetype
       this.pageType = this.getPageType();
 
-      // Cache barcode pe variant_id (runtime + seed din Liquid)
+      /* ===== Cache barcode pe variant_id ===== */
       this.variantBarcodeCache = new Map();
       this.variantMeta = {};
 
@@ -73,9 +58,9 @@
         this.variantMeta["{{ item.variant_id }}"] = {
           barcode: {{ item.variant.barcode | json }}
         };
-        if({{ item.variant.barcode != blank | json }}) {
+        {% if item.variant.barcode != blank %}
           this.variantBarcodeCache.set("{{ item.variant_id }}", String({{ item.variant.barcode | json }}));
-        }
+        {% endif %}
       {% endfor %}
 
       /* Seed din COLECȚIE (acoperă quick add) */
@@ -93,9 +78,7 @@
       /* Seed din PDP (ideal: toate variantele) */
       {% if template contains 'product' %}
         {% for v in product.variants %}
-          this.variantMeta["{{ v.id }}"] = {
-            barcode: {{ v.barcode | json }}
-          };
+          this.variantMeta["{{ v.id }}"] = { barcode: {{ v.barcode | json }} };
           {% if v.barcode != blank %}
             this.variantBarcodeCache.set("{{ v.id }}", String({{ v.barcode | json }}));
           {% endif %}
@@ -106,20 +89,19 @@
       this.itemsList = [];
     }
 
-    // Helper: aduce barcode pentru un variant_id (prefetch non-blocant dacă nu e în cache)
+    /* ===== Helpers ===== */
     getBarcodeByVariantId(variantId){
       if(!variantId) return null;
       const key = String(variantId);
-      if(this.variantBarcodeCache.has(key)) {
-        return this.variantBarcodeCache.get(key); // poate fi '' dacă nu are
-      }
-      // dacă avem seed din Liquid, îl folosim imediat
+      if(this.variantBarcodeCache.has(key)) return this.variantBarcodeCache.get(key); // poate fi '' dacă lipsește
+
       const seeded = this.variantMeta[key] && this.variantMeta[key].barcode;
       if(seeded) {
-        this.variantBarcodeCache.set(key, String(seeded));
-        return String(seeded);
+        const bc = String(seeded);
+        this.variantBarcodeCache.set(key, bc);
+        return bc;
       }
-      // altfel, preluăm non-blocant din /variants/{id}.js
+      // Prefetch non-blocant din /variants/{id}.js
       fetch(`/variants/${variantId}.js`)
         .then(r => r.ok ? r.json() : null)
         .then(v => {
@@ -130,7 +112,6 @@
       return null;
     }
 
-    // „îmbogățește” item-urile cu barcode (din seed/cache/prefetch)
     enrichItemsWithMeta(items){
       return (items || []).map(it => {
         const vId = it.variant_id || it.id || (it.variant && it.variant.id);
@@ -144,62 +125,39 @@
     }
 
     getPageType() {
-      {% if template contains 'product' %}
-        return { dynx: 'offerdetail', ecomm: 'product' };
-      {% elsif template contains 'collection' %}
-        return { dynx: 'category', ecomm: 'category' };
-      {% elsif template contains 'cart' %}
-        return { dynx: 'cart', ecomm: 'cart' };
-      {% elsif template contains 'search' %}
-        return { dynx: 'searchresults', ecomm: 'searchresults' };
-      {% elsif template == 'index' %}
-        return { dynx: 'home', ecomm: 'home' };
-      {% else %}
-        return { dynx: 'other', ecomm: 'other' };
+      {% if template contains 'product' %}   return { dynx:'offerdetail', ecomm:'product' };
+      {% elsif template contains 'collection' %} return { dynx:'category', ecomm:'category' };
+      {% elsif template contains 'cart' %}    return { dynx:'cart', ecomm:'cart' };
+      {% elsif template contains 'search' %}  return { dynx:'searchresults', ecomm:'searchresults' };
+      {% elsif template == 'index' %}         return { dynx:'home', ecomm:'home' };
+      {% else %}                              return { dynx:'other', ecomm:'other' };
       {% endif %}
     }
 
     updateCart() {
-      fetch("/cart.js")
-        .then((response) => response.json())
-        .then((data) => { this.cart = data; });
+      fetch("/cart.js").then(r => r.json()).then(d => { this.cart = d; });
     }
 
     debounce(delay) {
-      let timeoutId;
-      return function(func) {
-        const context = this;
-        const args = arguments;
-        clearTimeout(timeoutId);
-        timeoutId = setTimeout(function() {
-          func.apply(context, args);
-        }, delay);
-      };
+      let t; return (fn)=>{ clearTimeout(t); t = setTimeout(fn, delay); };
     }
 
-    eventConsole(eventName, eventData) {
-      const css1 = 'background: DarkMagenta; color: #fff; font-size: normal; border-radius: 3px 0 0 3px; padding: 3px 4px;';
-      const css2 = 'background-color: DarkOrchid; color: #fff; font-size: normal; border-radius: 0 3px 3px 0; padding: 3px 4px;';
-      console.log('%cGTM DataLayer Event:%c' + eventName, css1, css2, eventData);
+    eventConsole(name, data) {
+      const css1='background: DarkMagenta; color:#fff; border-radius:3px 0 0 3px; padding:3px 4px;';
+      const css2='background: DarkOrchid; color:#fff; border-radius:0 3px 3px 0; padding:3px 4px;';
+      console.log('%cGTM DataLayer Event:%c'+name, css1, css2, data);
     }
 
+    /* ===== Bootstrap colectare ===== */
     collectData() {
       this.customerDataLayer();
       this.ajaxRequestData();
       this.searchPageData();
       this.miniCartData();
 
-      {% if template contains 'cart' %}
-        this.viewCartPageData();
-      {% endif %}
-
-      {% if template contains 'product' %}
-        this.productSinglePage();
-      {% endif %}
-
-      {% if template contains 'collection' %}
-        this.collectionsPageData();
-      {% endif %}
+      {% if template contains 'cart' %}    this.viewCartPageData(); {% endif %}
+      {% if template contains 'product' %} this.productSinglePage(); {% endif %}
+      {% if template contains 'collection' %} this.collectionsPageData(); {% endif %}
 
       this.addToWishListData();
       this.quickViewData();
@@ -210,17 +168,16 @@
       this.loginRegisterData();
     }
 
-    //logged-in customer data
+    /* ===== Customer data ===== */
     customerDataLayer() {
       const currentUser = {};
       {% if customer %}
         currentUser.id = {{ customer.id }};
         currentUser.first_name = "{{ customer.first_name }}";
-        currentUser.last_name = "{{ customer.last_name }}";
-        currentUser.full_name = "{{ customer.name }}";
-        currentUser.email = "{{ customer.email }}";
-        currentUser.phone = "{{ customer.default_address.phone }}";
-
+        currentUser.last_name  = "{{ customer.last_name }}";
+        currentUser.full_name  = "{{ customer.name }}";
+        currentUser.email      = "{{ customer.email }}";
+        currentUser.phone      = "{{ customer.default_address.phone }}";
         {% if customer.default_address %}
           currentUser.address = {
             address_summary: "{{ customer.default_address.summary }}",
@@ -237,699 +194,577 @@
         {% endif %}
       {% endif %}
 
-      if (currentUser.email) {
-        currentUser.hash_email = "{{ customer.email | sha256 }}"
-      }
-
-      if (currentUser.phone) {
-        currentUser.hash_phone = "{{ customer.phone | sha256 }}"
-      }
+      if (currentUser.email) currentUser.hash_email = "{{ customer.email | sha256 }}";
+      if (currentUser.phone) currentUser.hash_phone = "{{ customer.phone | sha256 }}";
 
       window.dataLayer = window.dataLayer || [];
       dataLayer.push({ customer: currentUser });
     }
 
-    // add_to_cart, remove_from_cart, search
+    /* ===== AJAX & form flows (Add to Cart + Search + Change) ===== */
     ajaxRequestData() {
       const self = this;
 
-      // handle non-ajax add to cart
+      /* A) Asigură hidden inputs pe toate formularele /cart/add (flow nativ) */
+      document.querySelectorAll('form[action*="/cart/add"]').forEach((form)=>{
+        const ensure = (name)=>{
+          if (!form.querySelector(`input[name="${name}"]`)) {
+            const hi = document.createElement('input');
+            hi.type='hidden'; hi.name=name; hi.value='';
+            form.appendChild(hi);
+          }
+        };
+        ensure('properties[aep_item_id]');
+        ensure('properties[aep_barcode]');
+
+        const variantInput = form.querySelector('[name="id"], [name="variant"]');
+        const sync = ()=>{
+          const vid = variantInput && (variantInput.value || variantInput.getAttribute('value'));
+          const bc  = self.getBarcodeByVariantId(vid) || '';
+          form.querySelector('input[name="properties[aep_item_id]"]').value = bc;
+          form.querySelector('input[name="properties[aep_barcode]"]').value  = bc;
+        };
+        if (variantInput) { variantInput.addEventListener('change', sync); sync(); }
+      });
+
+      /* B) Optional: redirecționare post nativă (nu schimbă obiectivul nostru) */
       if(this.isAddToCartRedirect) {
         document.addEventListener('submit', function(event) {
-          const addToCartForm = event.target.closest('form[action="/cart/add"]');
-          if(addToCartForm) {
-            event.preventDefault();
-            const formData = new FormData(addToCartForm);
-
-            fetch(window.Shopify.routes.root + 'cart/add.js', { method: 'POST', body: formData })
-              .then(() => { window.location.href = "{{ routes.cart_url }}"; })
-              .catch((error) => { console.error('Error:', error); });
-          }
+          const f = event.target.closest('form[action="/cart/add"]');
+          if(!f) return;
+          event.preventDefault();
+          const fd = new FormData(f);
+          fetch(window.Shopify.routes.root + 'cart/add.js', { method:'POST', body:fd })
+            .then(()=>{ window.location.href = "{{ routes.cart_url }}"; })
+            .catch(console.error);
         });
       }
 
-      // fetch
-      let originalFetch = window.fetch;
-      let debounce = this.debounce(800);
+      /* C) Override fetch ca să injectăm PROPERTIES la /cart/add (FormData + JSON) */
+      const originalFetch = window.fetch;
+      const debounce = this.debounce(800);
 
-      window.fetch = function () {
-        return originalFetch.apply(this, arguments).then((response) => {
+      window.fetch = async (...args) => {
+        try {
+          const req = args[0];
+          const init = args[1] || {};
+          const url  = (typeof req === 'string') ? req : (req && req.url);
+          const method = (init.method || (req && req.method) || 'GET').toUpperCase();
+
+          // ---- INJECTION pe /cart/add ----
+          if (url && url.includes('/cart/add') && method === 'POST') {
+            // FormData body
+            if (init.body instanceof FormData) {
+              const fd = init.body;
+              const vid = fd.get('id') || fd.get('variant') || fd.get('items[0][id]');
+              const bc  = this.getBarcodeByVariantId(vid) || '';
+              if (!fd.has('properties[aep_item_id]')) fd.append('properties[aep_item_id]', bc);
+              if (!fd.has('properties[aep_barcode]'))  fd.append('properties[aep_barcode]',  bc);
+            }
+            // JSON body
+            else if (typeof init.body === 'string' && (init.headers && /application\/json/i.test(init.headers['Content-Type'] || init.headers['content-type'] || ''))) {
+              try {
+                const payload = JSON.parse(init.body);
+                // shape 1: { id, quantity, properties? }
+                if (payload && payload.id) {
+                  const bc = this.getBarcodeByVariantId(payload.id) || '';
+                  payload.properties = Object.assign({}, payload.properties, { aep_item_id: bc, aep_barcode: bc });
+                }
+                // shape 2: { items:[ {id, quantity, properties?} ] }
+                if (payload && Array.isArray(payload.items)) {
+                  payload.items = payload.items.map(item => {
+                    const vid = item.id || item.variant_id;
+                    const bc  = this.getBarcodeByVariantId(vid) || '';
+                    return Object.assign({}, item, {
+                      properties: Object.assign({}, item.properties, { aep_item_id: bc, aep_barcode: bc })
+                    });
+                  });
+                }
+                init.body = JSON.stringify(payload);
+                args[1] = init;
+              } catch(e) {/* lăsăm netamperat dacă nu e JSON valid */}
+            }
+          }
+          // ---- END INJECTION ----
+
+          const response = await originalFetch(...args);
+
+          // Handlers existenți (search/add/change) — îmbogățesc cu barcode și împing în DL
           if (response.ok) {
-            let cloneResponse = response.clone();
-            let requestURL = arguments[0]['url'] || arguments[0];
+            const clone = response.clone();
+            const requestURL = url || (args[0] && args[0].url) || '';
 
+            // Search autosuggest
             if(/.*\/search\/?.*\?.*q=.+/.test(requestURL) && !requestURL.includes('&requestFrom=uldt')) {
-              const queryString = requestURL.split('?')[1];
-              const urlParams = new URLSearchParams(queryString);
+              const qs = requestURL.split('?')[1]; const urlParams = new URLSearchParams(qs);
               const search_term = urlParams.get("q");
-
-              debounce(function() {
+              debounce(()=> {
                 fetch(`${self.storeURL}/search/suggest.json?q=${search_term}&resources[type]=product&requestFrom=uldt`)
-                  .then(res => res.json())
-                  .then(function(data) {
-                        const products = data.resources.results.products;
-                        if(products.length) {
-                          const fetchRequests = products.map(product =>
-                            fetch(`${self.storeURL}/${product.url.split('?')[0]}.js`)
-                              .then(response => response.json())
-                              .catch(error => console.error('Error fetching:', error))
-                          );
-
-                          Promise.all(fetchRequests)
-                            .then(products => {
-                                const items = products.map((product) => {
-                                  return {
-                                    product_id: product.id,
-                                    product_title: product.title,
-                                    variant_id: product.variants[0].id,
-                                    variant_title: product.variants[0].title,
-                                    vendor: product.vendor,
-                                    total_discount: 0,
-                                    final_price: product.price_min,
-                                    product_type: product.type,
-                                    quantity: 1,
-                                    sku: product.variants[0].sku,
-                                    barcode: product.variants[0].barcode || null
-                                  }
-                                });
-
-                                self.ecommerceDataLayer('search', {search_term, items});
-                            })
-                        } else {
-                          self.ecommerceDataLayer('search', {search_term, items: []});
-                        }
+                  .then(res=>res.json())
+                  .then(data=>{
+                    const prods = data.resources?.results?.products || [];
+                    if(!prods.length) { self.ecommerceDataLayer('search', {search_term, items: []}); return; }
+                    const reqs = prods.map(p => fetch(`${self.storeURL}/${p.url.split('?')[0]}.js`).then(r=>r.json()));
+                    Promise.all(reqs).then(list=>{
+                      const items = list.map(p => ({
+                        product_id: p.id,
+                        product_title: p.title,
+                        variant_id: p.variants[0].id,
+                        variant_title: p.variants[0].title,
+                        vendor: p.vendor,
+                        total_discount: 0,
+                        final_price: p.price_min,
+                        product_type: p.type,
+                        quantity: 1,
+                        sku: p.variants[0].sku,
+                        barcode: p.variants[0].barcode || null
+                      }));
+                      self.ecommerceDataLayer('search', {search_term, items});
+                    });
                   });
               });
             }
+            // Add to cart
             else if (requestURL.includes("/cart/add")) {
-              cloneResponse.text().then((text) => {
-                let data = JSON.parse(text);
-
+              const text = await clone.text();
+              let data; try { data = JSON.parse(text); } catch(e){ data = null; }
+              if (data) {
                 if(data.items && Array.isArray(data.items)) {
                   const enriched = self.enrichItemsWithMeta(data.items);
-                  enriched.forEach(function(item) {
-                      self.ecommerceDataLayer('add_to_cart', {items: [item]});
-                    })
+                  enriched.forEach(it => self.ecommerceDataLayer('add_to_cart', {items:[it]}));
                 } else {
                   const enriched = self.enrichItemsWithMeta([data]);
                   self.ecommerceDataLayer('add_to_cart', {items: enriched});
                 }
                 self.updateCart();
-              });
-            } else if(requestURL.includes("/cart/change") || requestURL.includes("/cart/update")) {
-
-               cloneResponse.text().then((text) => {
-                let newCart = JSON.parse(text);
+              }
+            }
+            // Change / update cart
+            else if (requestURL.includes("/cart/change") || requestURL.includes("/cart/update")) {
+              const text = await clone.text();
+              let newCart; try { newCart = JSON.parse(text); } catch(e){ newCart = null; }
+              if (newCart) {
                 let newCartItems = newCart.items;
                 let oldCartItems = self.cart.items;
-
-                for(let i = 0; i < oldCartItems.length; i++) {
+                for (let i=0;i<oldCartItems.length;i++){
                   let item = oldCartItems[i];
-                  let newItem = newCartItems.find(newItems => newItems.id === item.id);
-
-                  if(newItem) {
-                    if(newItem.quantity > item.quantity) {
-                      // cart item increment
+                  let newItem = newCartItems.find(n => n.id === item.id);
+                  if(newItem){
+                    if(newItem.quantity > item.quantity){
                       let quantity = (newItem.quantity - item.quantity);
-                      let updatedItem = {...item, quantity}
-                      updatedItem = self.enrichItemsWithMeta([updatedItem])[0];
-                      self.ecommerceDataLayer('add_to_cart', {items: [updatedItem]});
-                      self.updateCart();
-
-                    } else if(newItem.quantity < item.quantity) {
-                      // cart item decrement
+                      let updated = self.enrichItemsWithMeta([{...item, quantity}])[0];
+                      self.ecommerceDataLayer('add_to_cart', {items:[updated]}); self.updateCart();
+                    } else if(newItem.quantity < item.quantity){
                       let quantity = (item.quantity - newItem.quantity);
-                      let updatedItem = {...item, quantity}
-                      updatedItem = self.enrichItemsWithMeta([updatedItem])[0];
-                      self.ecommerceDataLayer('remove_from_cart', {items: [updatedItem]});
-                      self.updateCart();
+                      let updated = self.enrichItemsWithMeta([{...item, quantity}])[0];
+                      self.ecommerceDataLayer('remove_from_cart', {items:[updated]}); self.updateCart();
                     }
                   } else {
                     let removed = self.enrichItemsWithMeta([item])[0];
-                    self.ecommerceDataLayer('remove_from_cart', {items: [removed]});
-                    self.updateCart();
+                    self.ecommerceDataLayer('remove_from_cart', {items:[removed]}); self.updateCart();
                   }
                 }
-              });
+              }
             }
           }
           return response;
-        });
-      }
-      // end fetch
+        } catch (e) {
+          return originalFetch(...args);
+        }
+      };
 
-      // xhr
-      var origXMLHttpRequest = XMLHttpRequest;
+      /* D) XHR fallback (rămâne, dar fetch acoperă Sleek în 99% din cazuri) */
+      const OrigXHR = XMLHttpRequest;
       XMLHttpRequest = function() {
-        var requestURL;
-        var reqMethod = 'GET';
+        const xhr = new OrigXHR();
+        let requestURL='', reqMethod='GET';
+        const origOpen = xhr.open, origSend = xhr.send;
 
-        var xhr = new origXMLHttpRequest();
-        var origOpen = xhr.open;
-        var origSend = xhr.send;
-
-        // Override open
-        xhr.open = function(method, url) {
-          requestURL = url;
-          reqMethod = (method || 'GET').toUpperCase();
-          return origOpen.apply(this, arguments);
-        };
-
-        xhr.send = function(data) {
-          if (requestURL.includes("/cart/add") || requestURL.includes("/cart/change") || /.*\/search\/?.*\?.*q=.+/.test(requestURL)) {
-            xhr.addEventListener('load', function() {
-              if (xhr.readyState === 4) {
-                if (xhr.status >= 200 && xhr.status < 400) {
-
-                  if(/.*\/search\/?.*\?.*q=.+/.test(requestURL) && !requestURL.includes('&requestFrom=uldt')) {
-                    const queryString = requestURL.split('?')[1];
-                    const urlParams = new URLSearchParams(queryString);
-                    const search_term = urlParams.get("q");
-
-                    let debounce = self.debounce(800);
-                    debounce(function() {
-                      fetch(`${self.storeURL}/search/suggest.json?q=${search_term}&resources[type]=product&requestFrom=uldt`)
-                        .then(res => res.json())
-                        .then(function(data) {
-                          const products = data.resources.results.products;
-                          if(products.length) {
-                            const fetchRequests = products.map(product =>
-                              fetch(`${self.storeURL}/${product.url.split('?')[0]}.js`)
-                                .then(response => response.json())
-                                .catch(error => console.error('Error fetching:', error))
-                            );
-
-                            Promise.all(fetchRequests)
-                              .then(products => {
-                                const items = products.map((product) => {
-                                  return {
-                                    product_id: product.id,
-                                    product_title: product.title,
-                                    variant_id: product.variants[0].id,
-                                    variant_title: product.variants[0].title,
-                                    vendor: product.vendor,
-                                    total_discount: 0,
-                                    final_price: product.price_min,
-                                    product_type: product.type,
-                                    quantity: 1,
-                                    sku: product.variants[0].sku,
-                                    barcode: product.variants[0].barcode || null
-                                  }
-                                });
-                                self.ecommerceDataLayer('search', {search_term, items});
-                              })
-                          } else {
-                            self.ecommerceDataLayer('search', {search_term, items: []});
-                          }
-                        });
+        xhr.open = function(method, url){ requestURL=url; reqMethod=(method||'GET').toUpperCase(); return origOpen.apply(this, arguments); };
+        xhr.send = function(data){
+          xhr.addEventListener('load', ()=> {
+            if (xhr.readyState===4 && xhr.status>=200 && xhr.status<400) {
+              if(/.*\/search\/?.*\?.*q=.+/.test(requestURL) && !requestURL.includes('&requestFrom=uldt')) {
+                const qs = requestURL.split('?')[1]; const urlParams = new URLSearchParams(qs);
+                const search_term = urlParams.get("q");
+                const debounce = self.debounce(800);
+                debounce(()=> {
+                  fetch(`${self.storeURL}/search/suggest.json?q=${search_term}&resources[type]=product&requestFrom=uldt`)
+                    .then(res=>res.json())
+                    .then(data=>{
+                      const prods = data.resources?.results?.products || [];
+                      if(!prods.length) { self.ecommerceDataLayer('search', {search_term, items: []}); return; }
+                      const reqs = prods.map(p => fetch(`${self.storeURL}/${p.url.split('?')[0]}.js`).then(r=>r.json()));
+                      Promise.all(reqs).then(list=>{
+                        const items = list.map(p => ({
+                          product_id: p.id,
+                          product_title: p.title,
+                          variant_id: p.variants[0].id,
+                          variant_title: p.variants[0].title,
+                          vendor: p.vendor,
+                          total_discount: 0,
+                          final_price: p.price_min,
+                          product_type: p.type,
+                          quantity: 1,
+                          sku: p.variants[0].sku,
+                          barcode: p.variants[0].barcode || null
+                        }));
+                        self.ecommerceDataLayer('search', {search_term, items});
+                      });
                     });
-
-                  } else if(requestURL.includes("/cart/add")) {
-                    const data = JSON.parse(xhr.responseText);
-
-                    if(data.items && Array.isArray(data.items)) {
-                      const enriched = self.enrichItemsWithMeta(data.items);
-                      enriched.forEach(function(item) {
-                        self.ecommerceDataLayer('add_to_cart', {items: [item]});
-                      })
-                    } else {
-                      const enriched = self.enrichItemsWithMeta([data]);
-                      self.ecommerceDataLayer('add_to_cart', {items: enriched});
-                    }
-                    self.updateCart();
-
-                  } else if(requestURL.includes("/cart/change")) {
-                    const newCart = JSON.parse(xhr.responseText);
-                    const newCartItems = newCart.items;
-                    let oldCartItems = self.cart.items;
-
-                    for(let i = 0; i < oldCartItems.length; i++) {
-                      let item = oldCartItems[i];
-                      let newItem = newCartItems.find(newItems => newItems.id === item.id);
-
-                      if(newItem) {
-                        if(newItem.quantity > item.quantity) {
-                          let quantity = (newItem.quantity - item.quantity);
-                          let updatedItem = {...item, quantity}
-                          updatedItem = self.enrichItemsWithMeta([updatedItem])[0];
-                          self.ecommerceDataLayer('add_to_cart', {items: [updatedItem]});
-                          self.updateCart();
-                        } else if(newItem.quantity < item.quantity) {
-                          let quantity = (item.quantity - newItem.quantity);
-                          let updatedItem = {...item, quantity}
-                          updatedItem = self.enrichItemsWithMeta([updatedItem])[0];
-                          self.ecommerceDataLayer('remove_from_cart', {items: [updatedItem]});
-                          self.updateCart();
-                        }
-                      } else {
-                        let removed = self.enrichItemsWithMeta([item])[0];
-                        self.ecommerceDataLayer('remove_from_cart', {items: [removed]});
-                        self.updateCart();
+                });
+              } else if(requestURL.includes("/cart/add")) {
+                let data; try{ data = JSON.parse(xhr.responseText); }catch(e){ data=null; }
+                if(data){
+                  if(data.items && Array.isArray(data.items)) {
+                    const enriched = self.enrichItemsWithMeta(data.items);
+                    enriched.forEach(it => self.ecommerceDataLayer('add_to_cart', {items:[it]}));
+                  } else {
+                    const enriched = self.enrichItemsWithMeta([data]);
+                    self.ecommerceDataLayer('add_to_cart', {items: enriched});
+                  }
+                  self.updateCart();
+                }
+              } else if(requestURL.includes("/cart/change")) {
+                let newCart; try{ newCart = JSON.parse(xhr.responseText); }catch(e){ newCart=null; }
+                if(newCart){
+                  const newItems = newCart.items;
+                  const oldItems = self.cart.items;
+                  for(let i=0;i<oldItems.length;i++){
+                    let item = oldItems[i];
+                    let ni = newItems.find(x => x.id === item.id);
+                    if(ni){
+                      if(ni.quantity > item.quantity){
+                        let q=(ni.quantity-item.quantity);
+                        let upd=self.enrichItemsWithMeta([{...item, quantity:q}])[0];
+                        self.ecommerceDataLayer('add_to_cart', {items:[upd]}); self.updateCart();
+                      } else if(ni.quantity < item.quantity){
+                        let q=(item.quantity-ni.quantity);
+                        let upd=self.enrichItemsWithMeta([{...item, quantity:q}])[0];
+                        self.ecommerceDataLayer('remove_from_cart', {items:[upd]}); self.updateCart();
                       }
+                    } else {
+                      let removed=self.enrichItemsWithMeta([item])[0];
+                      self.ecommerceDataLayer('remove_from_cart', {items:[removed]}); self.updateCart();
                     }
                   }
                 }
               }
-            });
-          }
-
+            }
+          });
           return origSend.apply(this, arguments);
         };
-
         return xhr;
       };
-      //end xhr
     }
 
-    // search event from search page
+    /* ===== Search page ===== */
     searchPageData() {
-      const self = this;
-      let pageUrl = window.location.href;
-
+      const self=this; const pageUrl=window.location.href;
       if(/.+\/search\?.*\&?q=.+/.test(pageUrl)) {
-        const queryString = pageUrl.split('?')[1];
-        const urlParams = new URLSearchParams(queryString);
+        const qs = pageUrl.split('?')[1]; const urlParams = new URLSearchParams(qs);
         const search_term = urlParams.get("q");
-
         fetch(`{{ shop.secure_url }}/search/suggest.json?q=${search_term}&resources[type]=product&requestFrom=uldt`)
-        .then(res => res.json())
-        .then(function(data) {
-              const products = data.resources.results.products;
-              if(products.length) {
-                const fetchRequests = products.map(product =>
-                  fetch(`${self.storeURL}/${product.url.split('?')[0]}.js`)
-                    .then(response => response.json())
-                    .catch(error => console.error('Error fetching:', error))
-                );
-                Promise.all(fetchRequests)
-                .then(products => {
-                    const items = products.map((product) => {
-                        return {
-                          product_id: product.id,
-                          product_title: product.title,
-                          variant_id: product.variants[0].id,
-                          variant_title: product.variants[0].title,
-                          vendor: product.vendor,
-                          total_discount: 0,
-                          final_price: product.price_min,
-                          product_type: product.type,
-                          quantity: 1,
-                          sku: product.variants[0].sku,
-                          barcode: product.variants[0].barcode || null
-                        }
-                    });
-
-                    self.ecommerceDataLayer('search', {search_term, items});
-                });
-              } else {
-                self.ecommerceDataLayer('search', {search_term, items: []});
-              }
-        });
+          .then(res=>res.json())
+          .then(data=>{
+            const prods = data.resources?.results?.products || [];
+            if(!prods.length){ self.ecommerceDataLayer('search', {search_term, items: []}); return; }
+            const reqs = prods.map(p => fetch(`${self.storeURL}/${p.url.split('?')[0]}.js`).then(r=>r.json()));
+            Promise.all(reqs).then(list=>{
+              const items = list.map(p => ({
+                product_id: p.id,
+                product_title: p.title,
+                variant_id: p.variants[0].id,
+                variant_title: p.variants[0].title,
+                vendor: p.vendor,
+                total_discount: 0,
+                final_price: p.price_min,
+                product_type: p.type,
+                quantity: 1,
+                sku: p.variants[0].sku,
+                barcode: p.variants[0].barcode || null
+              }));
+              self.ecommerceDataLayer('search', {search_term, items});
+            });
+          });
       }
     }
 
-    // view_cart (mini cart open)
+    /* ===== View Cart (mini + page) ===== */
     miniCartData() {
-      if(this.miniCartButton.length) {
-        let self = this;
-        if(this.miniCartAppersOn === 'hover') {
-          this.miniCartAppersOn = 'mouseenter';
-        }
-        this.miniCartButton.forEach((selector) => {
-          let miniCartButtons = document.querySelectorAll(selector);
-          miniCartButtons.forEach((miniCartButton) => {
-              miniCartButton.addEventListener(self.miniCartAppersOn, () => {
-                const enriched = self.enrichItemsWithMeta(self.cart.items || []);
-                self.ecommerceDataLayer('view_cart', {...self.cart, items: enriched});
-              });
-          })
+      if(!this.miniCartButton.length) return;
+      const self=this;
+      const ev = (this.miniCartAppersOn === 'hover') ? 'mouseenter' : this.miniCartAppersOn;
+      this.miniCartButton.forEach((sel)=>{
+        document.querySelectorAll(sel).forEach((btn)=>{
+          btn.addEventListener(ev, ()=>{
+            const enriched = self.enrichItemsWithMeta(self.cart.items || []);
+            self.ecommerceDataLayer('view_cart', {...self.cart, items: enriched});
+          });
         });
-      }
+      });
     }
 
-    // view_cart, add_to_cart, remove_from_cart
     viewCartPageData() {
       const enriched = this.enrichItemsWithMeta(this.cart.items || []);
       this.ecommerceDataLayer('view_cart', {...this.cart, items: enriched});
 
-      if(!this.isAjaxCartIncrementDecrement) {
-        const self = this;
-        document.addEventListener('pointerdown', (event) => {
-          const target = event.target.closest('a[href*="/cart/change?"]');
-          if(target) {
-            const linkUrl = target.getAttribute('href');
-            const queryString = linkUrl.split("?")[1];
-            const urlParams = new URLSearchParams(queryString);
-            const newQuantity = urlParams.get("quantity");
-            const line = urlParams.get("line");
-            const cart_id = urlParams.get("id");
-
-            if(newQuantity && (line || cart_id)) {
-              let item = line ? {...self.cart.items[line - 1]} : self.cart.items.find(item => item.key === cart_id);
-              let eventName = 'add_to_cart';
-              if(newQuantity < item.quantity) { eventName = 'remove_from_cart'; }
-              let quantity = Math.abs(newQuantity - item.quantity);
-              item['quantity'] = quantity;
-              item = self.enrichItemsWithMeta([item])[0];
-              self.ecommerceDataLayer(eventName, {items: [item]});
-            }
+      if(!this.isAjaxCartIncrementDecrement){
+        const self=this;
+        document.addEventListener('pointerdown', (e)=>{
+          const a = e.target.closest('a[href*="/cart/change?"]'); if(!a) return;
+          const qs = a.getAttribute('href').split('?')[1]; const p = new URLSearchParams(qs);
+          const newQ = +p.get('quantity'); const line = p.get('line'); const key = p.get('id');
+          if(newQ && (line || key)){
+            let item = line ? {...self.cart.items[line-1]} : self.cart.items.find(i => i.key === key);
+            let evt = (newQ < item.quantity) ? 'remove_from_cart' : 'add_to_cart';
+            let q = Math.abs(newQ - item.quantity); item['quantity'] = q;
+            item = self.enrichItemsWithMeta([item])[0];
+            self.ecommerceDataLayer(evt, {items:[item]});
           }
         });
       }
     }
 
+    /* ===== PDP ===== */
     productSinglePage() {
-    {% if template contains 'product' %}
+      {% if template contains 'product' %}
       const item = {
-          product_id: {{ product.id | json }},
-          variant_id: {{ product.selected_or_first_available_variant.id }},
-          product_title: {{ product.title | json }},
-          line_level_total_discount: 0,
-          vendor: {{ product.vendor | json }},
-          sku: {{ product.selected_or_first_available_variant.sku | json }},
-          barcode: {{ product.selected_or_first_available_variant.barcode | json }},
-          product_type: {{ product.type | json }},
-          item_list_id: {{ product.collections[0].id | json }},
-          item_list_name: {{ product.collections[0].title | json }},
-          {% if product.selected_or_first_available_variant.title != "Default Title" %}
-            variant_title: {{ product.selected_or_first_available_variant.title | json }},
-          {% endif %}
-          final_price: {{ product.selected_or_first_available_variant.price }},
-          quantity: 1
+        product_id: {{ product.id | json }},
+        variant_id: {{ product.selected_or_first_available_variant.id }},
+        product_title: {{ product.title | json }},
+        line_level_total_discount: 0,
+        vendor: {{ product.vendor | json }},
+        sku: {{ product.selected_or_first_available_variant.sku | json }},
+        barcode: {{ product.selected_or_first_available_variant.barcode | json }},
+        product_type: {{ product.type | json }},
+        item_list_id: {{ product.collections[0].id | json }},
+        item_list_name: {{ product.collections[0].title | json }},
+        {% if product.selected_or_first_available_variant.title != "Default Title" %} variant_title: {{ product.selected_or_first_available_variant.title | json }}, {% endif %}
+        final_price: {{ product.selected_or_first_available_variant.price }},
+        quantity: 1
       };
-
-      const variants = {{ product.variants | json }}
-      this.ecommerceDataLayer('view_item', {items: [item]});
+      const variants = {{ product.variants | json }};
+      this.ecommerceDataLayer('view_item', {items:[item]});
 
       if(this.shopifyDirectCheckoutButton.length) {
-          let self = this;
-          document.addEventListener('pointerdown', (event) => {
-            let checkoutButton = event.target.closest(this.shopifyDirectCheckoutButton.join(', '));
+        let self=this;
+        document.addEventListener('pointerdown', (event)=>{
+          let checkoutButton = event.target.closest(this.shopifyDirectCheckoutButton.join(', '));
+          if(!checkoutButton) return;
 
-            if(checkoutButton && (variants || self.quickViewVariants)) {
-                let checkoutForm = checkoutButton.closest('form[action*="/cart/add"]');
-                if(checkoutForm) {
-                    let variant_id = null;
-                    let varientInput = checkoutForm.querySelector('input[name="id"]');
-                    let varientIdFromURL = new URLSearchParams(window.location.search).get('variant');
-                    let firstVarientId = item.variant_id;
+          let checkoutForm = checkoutButton.closest('form[action*="/cart/add"]');
+          if(!checkoutForm) return;
 
-                    if(varientInput) {
-                      variant_id = parseInt(varientInput.value);
-                    } else if(varientIdFromURL) {
-                      variant_id = varientIdFromURL;
-                    } else if(firstVarientId) {
-                      variant_id = firstVarientId;
-                    }
+          let variant_id = null;
+          let varInput = checkoutForm.querySelector('input[name="id"]');
+          let varFromURL = new URLSearchParams(window.location.search).get('variant');
+          let firstVarId = item.variant_id;
+          if(varInput){ variant_id = parseInt(varInput.value); }
+          else if(varFromURL){ variant_id = varFromURL; }
+          else if(firstVarId){ variant_id = firstVarId; }
 
-                    if(variant_id) {
-                        variant_id = parseInt(variant_id);
-
-                        let quantity = 1;
-                        let quantitySelector = checkoutForm.getAttribute('id');
-                        if(quantitySelector) {
-                          let quantityInput = document.querySelector('input[name="quantity"][form="'+quantitySelector+'"]');
-                          if(quantityInput) { quantity = +quantityInput.value; }
-                        }
-
-                        if(variant_id) {
-                            let variant = variants.find(item => item.id === +variant_id);
-                            if(variant && item) {
-                                item['variant_id'] = variant_id;
-                                item['variant_title'] = variant.title;
-                                item['final_price'] = variant.price;
-                                item['quantity'] = quantity;
-                                item['barcode'] = variant.barcode || this.getBarcodeByVariantId(variant_id) || item['barcode'] || null;
-
-                                self.ecommerceDataLayer('add_to_cart', {items: [item]});
-                            } else if(self.quickViewedItem) {
-                              let variant = self.quickViewVariants.find(item => item.id === +variant_id);
-                              if(variant) {
-                                self.quickViewedItem['variant_id'] = variant_id;
-                                self.quickViewedItem['variant_title'] = variant.title;
-                                self.quickViewedItem['final_price'] = parseFloat(variant.price) * 100;
-                                self.quickViewedItem['quantity'] = quantity;
-                                self.quickViewedItem['barcode'] = variant.barcode || this.getBarcodeByVariantId(variant_id) || self.quickViewedItem['barcode'] || null;
-
-                                self.ecommerceDataLayer('add_to_cart', {items: [self.quickViewedItem]});
-                              }
-                            }
-                        }
-                    }
-                }
+          if(variant_id){
+            let quantity = 1;
+            let formId = checkoutForm.getAttribute('id');
+            if(formId){
+              let qInput = document.querySelector('input[name="quantity"][form="'+formId+'"]');
+              if(qInput) quantity = +qInput.value;
             }
-          });
+            let v = variants.find(x => x.id === +variant_id);
+            if(v && item){
+              item['variant_id']   = variant_id;
+              item['variant_title']= v.title;
+              item['final_price']  = v.price;
+              item['quantity']     = quantity;
+              item['barcode']      = v.barcode || this.getBarcodeByVariantId(variant_id) || item['barcode'] || null;
+              self.ecommerceDataLayer('add_to_cart', {items:[item]});
+            }
+          }
+        });
       }
-
       {% endif %}
     }
 
+    /* ===== Collection ===== */
     collectionsPageData() {
       var ecommerce = {
         'items': [
           {% for product in collection.products %}
-            {
-              'product_id': {{ product.id | json }},
-              'variant_id': {{ product.selected_or_first_available_variant.id | json }},
-              'vendor': {{ product.vendor | json }},
-              'sku': {{ product.selected_or_first_available_variant.sku | json }},
-              'barcode': {{ product.selected_or_first_available_variant.barcode | json }},
-              'total_discount': 0,
-              'variant_title': {{ product.selected_or_first_available_variant.title | json }},
-              'product_title': {{ product.title | json }},
-              'final_price': Number({{ product.price }}),
-              'product_type': {{ product.type | json }},
-              'item_list_id': {{ collection.id | json }},
-              'item_list_name': {{ collection.title | json }},
-              'url': {{ product.url | json }},
-              'quantity': 1
-            },
+          {
+            'product_id': {{ product.id | json }},
+            'variant_id': {{ product.selected_or_first_available_variant.id | json }},
+            'vendor': {{ product.vendor | json }},
+            'sku': {{ product.selected_or_first_available_variant.sku | json }},
+            'barcode': {{ product.selected_or_first_available_variant.barcode | json }},
+            'total_discount': 0,
+            'variant_title': {{ product.selected_or_first_available_variant.title | json }},
+            'product_title': {{ product.title | json }},
+            'final_price': Number({{ product.price }}),
+            'product_type': {{ product.type | json }},
+            'item_list_id': {{ collection.id | json }},
+            'item_list_name': {{ collection.title | json }},
+            'url': {{ product.url | json }},
+            'quantity': 1
+          },
           {% endfor %}
         ]
       };
-
       this.itemsList = ecommerce.items;
-      ecommerce['item_list_id'] = {{ collection.id | json }}
-      ecommerce['item_list_name'] = {{ collection.title | json }}
-
-      // îmbogățește pentru siguranță (quick add va folosi aceste obiecte)
+      ecommerce['item_list_id']   = {{ collection.id | json }};
+      ecommerce['item_list_name'] = {{ collection.title | json }};
       ecommerce.items = this.enrichItemsWithMeta(ecommerce.items);
-
       this.ecommerceDataLayer('view_item_list', ecommerce);
     }
 
-    // add to wishlist
+    /* ===== Quick add / wishlist ===== */
     addToWishListData() {
-      if(this.addToWishListSelectors && this.addToWishListSelectors.addWishListIcon) {
-        const self = this;
-        document.addEventListener('pointerdown', (event) => {
-          let target = event.target;
+      if(!(this.addToWishListSelectors && this.addToWishListSelectors.addWishListIcon)) return;
+      const self=this;
+      document.addEventListener('pointerdown', (event)=>{
+        let target = event.target;
+        if(!target.closest(self.addToWishListSelectors.addWishListIcon)) return;
 
-          if(target.closest(self.addToWishListSelectors.addWishListIcon)) {
-            let pageULR = window.location.href.replace(/\?.+/, '');
-            let requestURL = undefined;
-
-            if(/\/products\/[^/]+$/.test(pageULR)) {
-              requestURL = pageULR;
-            } else if(self.addToWishListSelectors.gridItemSelector && self.addToWishListSelectors.productLinkSelector) {
-              let itemElement = target.closest(self.addToWishListSelectors.gridItemSelector);
-              if(itemElement) {
-                let linkElement = itemElement.querySelector(self.addToWishListSelectors.productLinkSelector);
-                if(linkElement) {
-                  let link = linkElement.getAttribute('href').replace(/\?.+/g, '');
-                  if(link && /\/products\/[^/]+$/.test(link)) {
-                    requestURL = link;
-                  }
-                }
-              }
-            }
-
-            if(requestURL) {
-              fetch(requestURL + '.json')
-                .then(res => res.json())
-                .then(result => {
-                  let data = result.product;
-                  if(data) {
-                    let dataLayerData = {
-                      product_id: data.id,
-                      variant_id: data.variants[0].id,
-                      product_title: data.title,
-                      quantity: 1,
-                      final_price: parseFloat(data.variants[0].price) * 100,
-                      total_discount: 0,
-                      product_type: data.product_type,
-                      vendor: data.vendor,
-                      variant_title: (data.variants[0].title !== 'Default Title') ? data.variants[0].title : undefined,
-                      sku: data.variants[0].sku,
-                      barcode: data.variants[0].barcode || null
-                    }
-
-                    dataLayerData = self.enrichItemsWithMeta([dataLayerData])[0];
-
-                    self.ecommerceDataLayer('add_to_wishlist', {items: [dataLayerData]});
-                  }
-                });
+        let requestURL;
+        const pageURL = window.location.href.replace(/\?.+/, '');
+        if(/\/products\/[^/]+$/.test(pageURL)) {
+          requestURL = pageURL;
+        } else if(self.addToWishListSelectors.gridItemSelector && self.addToWishListSelectors.productLinkSelector) {
+          let itemEl = target.closest(self.addToWishListSelectors.gridItemSelector);
+          if(itemEl){
+            let linkEl = itemEl.querySelector(self.addToWishListSelectors.productLinkSelector);
+            if(linkEl){
+              let link = linkEl.getAttribute('href').replace(/\?.+/g, '');
+              if(link && /\/products\/[^/]+$/.test(link)) requestURL = link;
             }
           }
-        });
-      }
-    }
-
-    quickViewData() {
-      if(this.quickViewSelector.quickViewElement && this.quickViewSelector.gridItemSelector && this.quickViewSelector.productLinkSelector) {
-        const self = this;
-        document.addEventListener('pointerdown', (event) => {
-          let target = event.target;
-          if(target.closest(self.quickViewSelector.quickViewElement)) {
-            let requestURL = undefined;
-            let itemElement = target.closest(this.quickViewSelector.gridItemSelector );
-
-            if(itemElement) {
-              let linkElement = itemElement.querySelector(self.quickViewSelector.productLinkSelector);
-              if(linkElement) {
-                let link = linkElement.getAttribute('href').replace(/\?.+/g, '');
-                if(link && /\/products\/[^/]+$/.test(link)) {
-                  requestURL = link;
-                }
-              }
-            }
-
-            if(requestURL) {
-                fetch(requestURL + '.json')
-                  .then(res => res.json())
-                  .then(result => {
-                    let data = result.product;
-                    if(data) {
-                      let dataLayerData = {
-                        product_id: data.id,
-                        variant_id: data.variants[0].id,
-                        product_title: data.title,
-                        quantity: 1,
-                        final_price: parseFloat(data.variants[0].price) * 100,
-                        total_discount: 0,
-                        product_type: data.product_type,
-                        vendor: data.vendor,
-                        variant_title: (data.variants[0].title !== 'Default Title') ? data.variants[0].title : undefined,
-                        sku: data.variants[0].sku,
-                        barcode: data.variants[0].barcode || null
-                      }
-
-                      dataLayerData = self.enrichItemsWithMeta([dataLayerData])[0];
-
-                      self.ecommerceDataLayer('view_item', {items: [dataLayerData]});
-                      self.quickViewVariants = data.variants;
-                      self.quickViewedItem = dataLayerData;
-                    }
-                  });
-              }
-          }
-        });
-
-        {% unless template contains 'product' %}
-          if(this.shopifyDirectCheckoutButton.length) {
-            let self = this;
-            document.addEventListener('pointerdown', (event) => {
-              let checkoutButton = event.target.closest(this.shopifyDirectCheckoutButton.join(', '));
-
-              if(self.quickViewVariants && self.quickViewedItem && self.quickViewVariants.length && checkoutButton) {
-
-                let checkoutForm = checkoutButton.closest('form[action*="/cart/add"]');
-                if(checkoutForm) {
-                    let quantity = 1;
-                    let varientInput = checkoutForm.querySelector('input[name="id"]');
-                    let quantitySelector = checkoutForm.getAttribute('id');
-
-                    if(quantitySelector) {
-                      let quantityInput = document.querySelector('input[name="quantity"][form="'+quantitySelector+'"]');
-                      if(quantityInput) { quantity = +quantityInput.value; }
-                    }
-
-                    if(varientInput) {
-                        let variant_id = parseInt(varientInput.value);
-
-                        if(variant_id) {
-                            const variant = self.quickViewVariants.find(item => item.id === +variant_id);
-                            if(variant && self.quickViewedItem) {
-                                self.quickViewedItem['variant_id'] = variant_id;
-                                self.quickViewedItem['variant_title'] = variant.title;
-                                self.quickViewedItem['final_price'] = parseFloat(variant.price) * 100;
-                                self.quickViewedItem['quantity'] = quantity;
-                                self.quickViewedItem['barcode'] = variant.barcode || self.getBarcodeByVariantId(variant_id) || self.quickViewedItem['barcode'] || null;
-
-                                self.ecommerceDataLayer('add_to_cart', {items: [self.quickViewedItem]});
-                            }
-                        }
-                    }
-                }
-              }
-            });
-          }
-        {% endunless %}
-      }
-    }
-
-    // select_item events
-    selectItemData() {
-      const self = this;
-      const items = this.itemsList;
-
-      {% if template contains 'collection' %}
-        document.addEventListener('pointerdown', function(event) {
-          const productLink = event.target.closest('a[href*="/products/"]');
-          if(productLink) {
-            const linkUrl = productLink.getAttribute('href');
-            const matchProduct = (item) => {
-              var itemSlug = (item.url.split('/products/')[1]).split('#')[0].split('?')[0].trim();
-              var linkUrlItemSlug = (linkUrl.split('/products/')[1]).split('#')[0].split('?')[0].trim();
-              return itemSlug === linkUrlItemSlug;
-            }
-            const item = items.find(matchProduct);
-            const index = items.findIndex(matchProduct);
-            if(item) {
-              const enriched = self.enrichItemsWithMeta([{...item, index: index}])[0];
-              self.ecommerceDataLayer('select_item', {items: [enriched]});
-            }
-          }
-        });
-      {% endif %}
-
-      // select item on variant change
-      document.addEventListener('variant:change', function(event) {
-        const product_id = event.detail.product.id;
-        const variant_id = event.detail.variant.id;
-        const vendor = event.detail.product.vendor;
-        const variant_title = event.detail.variant.public_title;
-        const product_title = event.detail.product.title;
-        const final_price = event.detail.variant.price;
-        const product_type = event.detail.product.type;
-        const sku = event.detail.variant.sku;
-        const evBarcode = event.detail.variant && event.detail.variant.barcode;
-
-        let barcode = evBarcode || self.getBarcodeByVariantId(variant_id) || null;
-
-        const item = {
-          product_id: product_id,
-          product_title: product_title,
-          variant_id: variant_id,
-          variant_title: variant_title,
-          vendor: vendor,
-          final_price: final_price,
-          product_type: product_type,
-          quantity: 1,
-          sku: sku,
-          barcode: barcode
         }
-        const enriched = self.enrichItemsWithMeta([item])[0];
-        self.ecommerceDataLayer('select_item', {items: [enriched]});
+
+        if(!requestURL) return;
+        fetch(requestURL + '.json').then(r=>r.json()).then(result=>{
+          const d = result.product; if(!d) return;
+          let item = {
+            product_id: d.id, product_title: d.title, variant_id: d.variants[0].id,
+            variant_title: (d.variants[0].title !== 'Default Title') ? d.variants[0].title : undefined,
+            vendor: d.vendor, total_discount: 0,
+            final_price: parseFloat(d.variants[0].price) * 100, product_type: d.product_type,
+            quantity: 1, sku: d.variants[0].sku, barcode: d.variants[0].barcode || null
+          };
+          item = self.enrichItemsWithMeta([item])[0];
+          self.ecommerceDataLayer('add_to_wishlist', {items:[item]});
+        });
       });
     }
 
-    // all ecommerce events
+    quickViewData() {
+      if(!(this.quickViewSelector.quickViewElement && this.quickViewSelector.gridItemSelector && this.quickViewSelector.productLinkSelector)) return;
+      const self=this;
+      document.addEventListener('pointerdown', (event)=>{
+        let target = event.target;
+        if(!target.closest(self.quickViewSelector.quickViewElement)) return;
+
+        let requestURL;
+        let itemEl = target.closest(this.quickViewSelector.gridItemSelector);
+        if(itemEl){
+          let linkEl = itemEl.querySelector(self.quickViewSelector.productLinkSelector);
+          if(linkEl){
+            let link = linkEl.getAttribute('href').replace(/\?.+/g, '');
+            if(link && /\/products\/[^/]+$/.test(link)) requestURL = link;
+          }
+        }
+        if(!requestURL) return;
+
+        fetch(requestURL + '.json').then(r=>r.json()).then(result=>{
+          let d = result.product; if(!d) return;
+          let item = {
+            product_id: d.id, product_title: d.title, variant_id: d.variants[0].id,
+            variant_title: (d.variants[0].title !== 'Default Title') ? d.variants[0].title : undefined,
+            vendor: d.vendor, total_discount: 0, final_price: parseFloat(d.variants[0].price) * 100,
+            product_type: d.product_type, quantity: 1, sku: d.variants[0].sku, barcode: d.variants[0].barcode || null
+          };
+          item = self.enrichItemsWithMeta([item])[0];
+          self.ecommerceDataLayer('view_item', {items:[item]});
+          self.quickViewVariants = d.variants;
+          self.quickViewedItem  = item;
+        });
+      });
+
+      {% unless template contains 'product' %}
+      if(this.shopifyDirectCheckoutButton.length) {
+        let self=this;
+        document.addEventListener('pointerdown', (event)=>{
+          let btn = event.target.closest(this.shopifyDirectCheckoutButton.join(', '));
+          if(!(self.quickViewVariants && self.quickViewedItem && self.quickViewVariants.length && btn)) return;
+
+          let form = btn.closest('form[action*="/cart/add"]'); if(!form) return;
+          let quantity = 1;
+          let varInput = form.querySelector('input[name="id"]');
+          let formId = form.getAttribute('id');
+          if(formId){
+            let qInput = document.querySelector('input[name="quantity"][form="'+formId+'"]');
+            if(qInput) quantity = +qInput.value;
+          }
+          if(varInput){
+            let variant_id = parseInt(varInput.value);
+            if(variant_id){
+              const v = self.quickViewVariants.find(x => x.id === +variant_id);
+              if(v){
+                self.quickViewedItem['variant_id']   = variant_id;
+                self.quickViewedItem['variant_title']= v.title;
+                self.quickViewedItem['final_price']  = parseFloat(v.price) * 100;
+                self.quickViewedItem['quantity']     = quantity;
+                self.quickViewedItem['barcode']      = v.barcode || self.getBarcodeByVariantId(variant_id) || self.quickViewedItem['barcode'] || null;
+                self.ecommerceDataLayer('add_to_cart', {items:[self.quickViewedItem]});
+              }
+            }
+          }
+        });
+      }
+      {% endunless %}
+    }
+
+    /* ===== Select item ===== */
+    selectItemData() {
+      const self = this; const items = this.itemsList;
+
+      {% if template contains 'collection' %}
+      document.addEventListener('pointerdown', function(event) {
+        const productLink = event.target.closest('a[href*="/products/"]'); if(!productLink) return;
+        const linkUrl = productLink.getAttribute('href');
+        const matchProduct = (it)=>{
+          const s1=(it.url.split('/products/')[1]).split('#')[0].split('?')[0].trim();
+          const s2=(linkUrl.split('/products/')[1]).split('#')[0].split('?')[0].trim();
+          return s1===s2;
+        };
+        const item = items.find(matchProduct);
+        const index= items.findIndex(matchProduct);
+        if(item){
+          const enriched = self.enrichItemsWithMeta([{...item, index}])[0];
+          self.ecommerceDataLayer('select_item', {items:[enriched]});
+        }
+      });
+      {% endif %}
+
+      document.addEventListener('variant:change', (event)=>{
+        const p = event.detail.product, v = event.detail.variant;
+        const product_id = p.id, variant_id = v.id, vendor = p.vendor, variant_title = v.public_title;
+        const product_title = p.title, final_price = v.price, product_type = p.type, sku = v.sku;
+        let barcode = v.barcode || self.getBarcodeByVariantId(variant_id) || null;
+
+        let item = {
+          product_id, product_title, variant_id, variant_title, vendor,
+          final_price, product_type, quantity:1, sku, barcode
+        };
+        const enriched = self.enrichItemsWithMeta([item])[0];
+        self.ecommerceDataLayer('select_item', {items:[enriched]});
+      });
+    }
+
+    /* ===== Universal ecommerce DL push ===== */
     ecommerceDataLayer(event, data) {
-      const self = this;
+      const self=this;
       dataLayer.push({ 'ecommerce': null });
 
-      // dacă ne-a fost pasat un întreg cart, asigură-te că items sunt îmbogățite
       const incomingItems = data && data.items ? this.enrichItemsWithMeta(data.items) : [];
 
       const dataLayerData = {
@@ -937,15 +772,12 @@
         ecommerce: {
           currency: this.cart.currency,
           items: incomingItems.map((item, index) => {
-
-            // completează barcode din cache dacă încă lipsește
             if(!item.barcode && item.variant_id){
               const bc = this.getBarcodeByVariantId(item.variant_id);
               if(bc) item.barcode = bc;
             }
-
             const dataLayerItem = {
-              index: index,
+              index,
               item_id: (item.barcode && String(item.barcode))
                         || (item.sku && String(item.sku))
                         || (item.product_id?.toString?.() || ''),
@@ -957,19 +789,16 @@
               price: +((item.final_price / 100).toFixed(2)),
               discount: item.total_discount ? +((item.total_discount / 100).toFixed(2)) : 0
             };
-
             if(item.product_type)   dataLayerItem.item_category = item.product_type;
             if(item.vendor)         dataLayerItem.item_brand    = item.vendor;
             if(item.variant_title && item.variant_title !== 'Default Title') dataLayerItem.item_variant = item.variant_title;
             if(item.sku)            dataLayerItem.sku = String(item.sku);
             if(item.barcode)        dataLayerItem.barcode = String(item.barcode);
             if(item.item_list_name) dataLayerItem.item_list_name = item.item_list_name;
-            if(item.item_list_id)   dataLayerItem.item_list_id   = item.item_list_id.toString();
-
+            if(item.item_list_id)   dataLayerItem.item_list_id   = item.item_list_id?.toString?.();
             return dataLayerItem;
           })
         },
-        // Parametri clienți
         client_value: this.customerData.totalSpent,
         client_orders: this.customerData.ordersCount,
         new_customer: this.customerData.ordersCount === 0,
@@ -983,10 +812,10 @@
       if(data.total_price !== undefined) {
         dataLayerData.ecommerce.value = +((data.total_price / 100).toFixed(2));
       } else {
-        dataLayerData.ecommerce.value = +(dataLayerData.ecommerce.items.reduce((total, item) => total + (item.price * item.quantity), 0)).toFixed(2);
+        dataLayerData.ecommerce.value = +(dataLayerData.ecommerce.items.reduce((t, it)=> t + (it.price * it.quantity), 0)).toFixed(2);
       }
 
-      if(data.item_list_id)   dataLayerData.ecommerce.item_list_id = data.item_list_id;
+      if(data.item_list_id)   dataLayerData.ecommerce.item_list_id   = data.item_list_id;
       if(data.item_list_name) dataLayerData.ecommerce.item_list_name = data.item_list_name;
       if(data.search_term)    dataLayerData.search_term = data.search_term;
 
@@ -998,7 +827,7 @@
             id: item.item_id,
             google_business_vertical: self.dataSchema.dynamicRemarketing.business_vertical
           }))
-        }
+        };
       }
 
       if(!self.dataSchema.ecommerce || !self.dataSchema.ecommerce.show) {
@@ -1009,131 +838,75 @@
       self.eventConsole(self.eventPrefix + event, dataLayerData);
     }
 
-    // contact form submit & newsletters signup
+    /* ===== Forms / clicks / auth ===== */
     formData() {
-      const self = this;
+      const self=this;
       document.addEventListener('submit', function(event) {
-
-        let targetForm = event.target.closest('form[action^="/contact"]');
-
-        if(targetForm) {
-          const formData = {
-            form_location: window.location.href,
-            form_id: targetForm.getAttribute('id'),
-            form_classes: targetForm.getAttribute('class')
-          };
-
-          let formType = targetForm.querySelector('input[name="form_type"]');
-          let inputs = targetForm.querySelectorAll("input:not([type=hidden]):not([type=submit]), textarea, select");
-
-          inputs.forEach(function(input) {
-            var inputName = input.name;
-            var inputValue = input.value;
-
-            if (inputName && inputValue) {
-              var matches = inputName.match(/\[(.*?)\]/);
-              if (matches && matches.length > 1) {
-                  var fieldName = matches[1];
-                  formData[fieldName] = input.value;
-              }
-            }
-          });
-
-          if(formType && formType.value === 'customer') {
-            dataLayer.push({ event: self.eventPrefix + 'newsletter_signup', ...formData});
-            self.eventConsole(self.eventPrefix + 'newsletter_signup', { event: self.eventPrefix + 'newsletter_signup', ...formData});
-
-          } else if(formType && formType.value === 'contact') {
-            dataLayer.push({ event: self.eventPrefix + 'contact_form_submit', ...formData});
-            self.eventConsole(self.eventPrefix + 'contact_form_submit', { event: self.eventPrefix + 'contact_form_submit', ...formData});
+        let targetForm = event.target.closest('form[action^="/contact"]'); if(!targetForm) return;
+        const formData = {
+          form_location: window.location.href,
+          form_id: targetForm.getAttribute('id'),
+          form_classes: targetForm.getAttribute('class')
+        };
+        let formType = targetForm.querySelector('input[name="form_type"]');
+        let inputs = targetForm.querySelectorAll("input:not([type=hidden]):not([type=submit]), textarea, select");
+        inputs.forEach(function(input) {
+          var inputName = input.name, inputValue = input.value;
+          if (inputName && inputValue) {
+            var m = inputName.match(/\[(.*?)\]/);
+            if (m && m.length > 1) { formData[m[1]] = input.value; }
           }
+        });
+        if(formType && formType.value === 'customer') {
+          dataLayer.push({ event: self.eventPrefix + 'newsletter_signup', ...formData});
+          self.eventConsole(self.eventPrefix + 'newsletter_signup', { event: self.eventPrefix + 'newsletter_signup', ...formData});
+        } else if(formType && formType.value === 'contact') {
+          dataLayer.push({ event: self.eventPrefix + 'contact_form_submit', ...formData});
+          self.eventConsole(self.eventPrefix + 'contact_form_submit', { event: self.eventPrefix + 'contact_form_submit', ...formData});
         }
       });
-
     }
 
-    // phone_number_click event
     phoneClickData() {
-      const self = this;
+      const self=this;
       document.addEventListener('click', function(event) {
-        let target = event.target.closest('a[href^="tel:"]');
-        if(target) {
-          let phone_number = target.getAttribute('href').replace('tel:', '');
-          let eventData = {
-            event: self.eventPrefix + 'phone_number_click',
-            page_location: window.location.href,
-            link_classes: target.getAttribute('class'),
-            link_id: target.getAttribute('id'),
-            phone_number
-          }
-
-          dataLayer.push(eventData);
-          self.eventConsole(self.eventPrefix + 'phone_number_click', eventData);
-        }
+        let a = event.target.closest('a[href^="tel:"]'); if(!a) return;
+        let phone_number = a.getAttribute('href').replace('tel:', '');
+        let payload = { event: self.eventPrefix + 'phone_number_click', page_location: window.location.href, link_classes: a.getAttribute('class'), link_id: a.getAttribute('id'), phone_number };
+        dataLayer.push(payload); self.eventConsole(self.eventPrefix + 'phone_number_click', payload);
       });
     }
 
-    // email_click event
     emailClickData() {
-      const self = this;
+      const self=this;
       document.addEventListener('click', function(event) {
-        let target = event.target.closest('a[href^="mailto:"]');
-        if(target) {
-          let email_address = target.getAttribute('href').replace('mailto:', '');
-          let eventData = {
-            event: self.eventPrefix + 'email_click',
-            page_location: window.location.href,
-            link_classes: target.getAttribute('class'),
-            link_id: target.getAttribute('id'),
-            email_address
-          }
-
-          dataLayer.push(eventData);
-          self.eventConsole(self.eventPrefix + 'email_click', eventData);
-        }
+        let a = event.target.closest('a[href^="mailto:"]'); if(!a) return;
+        let email_address = a.getAttribute('href').replace('mailto:', '');
+        let payload = { event: self.eventPrefix + 'email_click', page_location: window.location.href, link_classes: a.getAttribute('class'), link_id: a.getAttribute('id'), email_address };
+        dataLayer.push(payload); self.eventConsole(self.eventPrefix + 'email_click', payload);
       });
     }
 
-    //login register
     loginRegisterData() {
-      const self = this;
-      let isTrackedLogin = false;
-      let isTrackedRegister = false;
-
+      const self=this; let trackedLogin=false, trackedRegister=false;
       if(window.location.href.includes('/account/login')) {
-        document.addEventListener('submit', function(e) {
-          const loginForm = e.target.closest('[action="/account/login"]');
-          if(loginForm && !isTrackedLogin) {
-              const eventData = { event: self.eventPrefix + 'login' }
-              isTrackedLogin = true;
-              dataLayer.push(eventData);
-              self.eventConsole(self.eventPrefix + 'login', eventData);
-          }
+        document.addEventListener('submit', function(e){
+          const f = e.target.closest('[action="/account/login"]');
+          if(f && !trackedLogin){ trackedLogin=true; const p={event:self.eventPrefix+'login'}; dataLayer.push(p); self.eventConsole(self.eventPrefix+'login', p); }
         });
       }
-
       if(window.location.href.includes('/account/register')) {
-        document.addEventListener('submit', function(e) {
-          const registerForm = e.target.closest('[action="/account"]');
-          if(registerForm && !isTrackedRegister) {
-              const eventData = { event: self.eventPrefix + 'sign_up' }
-              isTrackedRegister = true;
-              dataLayer.push(eventData);
-              self.eventConsole(self.eventPrefix + 'sign_up', eventData);
-          }
+        document.addEventListener('submit', function(e){
+          const f = e.target.closest('[action="/account"]');
+          if(f && !trackedRegister){ trackedRegister=true; const p={event:self.eventPrefix+'sign_up'}; dataLayer.push(p); self.eventConsole(self.eventPrefix+'sign_up', p); }
         });
       }
     }
-  }
-  // end class
+  } // end class
 
   document.addEventListener('DOMContentLoaded', function() {
-    try{
-      window.aepDataLayerInstance = new aep_dataLayer();
-    }catch(error) {
-      console.log(error);
-    }
+    try{ window.aepDataLayerInstance = new aep_dataLayer(); }
+    catch(error){ console.log(error); }
   });
 })();
 </script>
-
