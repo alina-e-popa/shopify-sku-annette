@@ -90,7 +90,7 @@ async function pushEcom(gtmName, ev){
   };
   dataLayer.push(customerInfo);
 
-  /* 2) Items — PRIORITATE proprietăți din cart: aep_item_id / aep_barcode */
+  /* 2) Items — PRIORITATE proprietăți din cart: _aep_item_id / _aep_barcode */
   const lineItems = co.lineItems || [];
   const items = lineItems.map((li, index)=>{
     // CE poate trimite fie "variant", fie "merchandise" (GraphQL Storefront API)
@@ -99,7 +99,7 @@ async function pushEcom(gtmName, ev){
     const props = toMap(li?.customAttributes || li?.properties || {});
 
     // PRIORITY: properties -> native fields
-    const propBarcode   = props.aep_item_id ?? props.aep_barcode ?? props.barcode ?? null;
+    const propBarcode   = props._aep_item_id ?? props._aep_barcode ?? props.barcode ?? null;
     const nativeBarcode = v?.barcode ?? li?.barcode ?? null;
     const barcode       = propBarcode ?? nativeBarcode;
 
