@@ -1,0 +1,161 @@
+<script>
+/**
+ * AEP Cart Barcode Backfill v4 - Optimized (no console logs)
+ */
+(function() {
+  'use strict';
+
+  let backfillInProgress = false;
+
+  function waitForDataLayer() {
+    return new Promise((resolve) => {
+      if (window.aepDataLayerInstance) {
+        resolve(window.aepDataLayerInstance);
+      } else {
+        const interval = setInterval(() => {
+          if (window.aepDataLayerInstance) {
+            clearInterval(interval);
+            resolve(window.aepDataLayerInstance);
+          }
+        }, 100);
+        setTimeout(() => { clearInterval(interval); resolve(null); }, 5000);
+      }
+    });
+  }
+
+  async function backfillCartBarcodes() {
+    if (backfillInProgress) return;
+    backfillInProgress = true;
+
+    try {
+      const dataLayerInstance = await waitForDataLayer();
+      if (!dataLayerInstance) {
+        backfillInProgress = false;
+        return;
+      }
+
+      const cartResponse = await fetch('/cart.js');
+      const cart = await cartResponse.json();
+      
+      if (!cart.items || cart.items.length === 0) {
+        backfillInProgress = false;
+        return;
+      }
+
+      const itemsToUpdate = [];
+      
+      for (const item of cart.items) {
+        const props = item.properties || {};
+        const needsUpdate = !props._aep_barcode || props._aep_barcode === '' || 
+                           !props._aep_item_id || props._aep_item_id === '';
+        
+        if (needsUpdate) {
+          let itemId = '';
+          const variantIdStr = String(item.variant_id);
+          
+          // Sursă 1: variantMeta
+          if (dataLayerInstance.variantMeta[variantIdStr]) {
+            const metaBarcode = dataLayerInstance.variantMeta[variantIdStr].barcode;
+            if (metaBarcode && String(metaBarcode).trim() !== '') {
+              itemId = String(metaBarcode).trim();
+            }
+          }
+          
+          // Sursă 2: variantBarcodeCache
+          if (!itemId && dataLayerInstance.variantBarcodeCache.has(variantIdStr)) {
+            const cachedBarcode = dataLayerInstance.variantBarcodeCache.get(variantIdStr);
+            if (cachedBarcode && cachedBarcode.trim() !== '') {
+              itemId = cachedBarcode.trim();
+            }
+          }
+          
+          // Sursă 3: Fetch API
+          if (!itemId) {
+            try {
+              const variantResponse = await fetch(`/variants/${item.variant_id}.js`);
+              const variant = await variantResponse.json();
+              
+              if (variant.barcode && String(variant.barcode).trim() !== '') {
+                itemId = String(variant.barcode).trim();
+              } else if (variant.sku && String(variant.sku).trim() !== '') {
+                itemId = String(variant.sku).trim();
+              }
+            } catch (err) {}
+          }
+          
+          // Fallback la SKU din cart
+          if (!itemId && item.sku && String(item.sku).trim() !== '') {
+            itemId = String(item.sku).trim();
+          }
+          
+          if (itemId) {
+            itemsToUpdate.push({
+              key: item.key,
+              quantity: item.quantity,
+              properties: { ...props, _aep_barcode: itemId, _aep_item_id: itemId }
+            });
+          }
+        }
+      }
+
+      if (itemsToUpdate.length === 0) {
+        backfillInProgress = false;
+        return;
+      }
+
+      for (const update of itemsToUpdate) {
+        try {
+          await fetch('/cart/change.js', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+            body: JSON.stringify({ id: update.key, quantity: update.quantity, properties: update.properties })
+          });
+        } catch (err) {}
+      }
+
+      if (dataLayerInstance.updateCart) {
+        dataLayerInstance.updateCart();
+      }
+
+    } catch (error) {} 
+    finally {
+      backfillInProgress = false;
+    }
+  }
+
+  // TRIGGER 1: Pagina /cart
+  if (/\/cart/.test(window.location.pathname)) {
+    if (document.readyState === 'loading') {
+      document.addEventListener('DOMContentLoaded', () => setTimeout(backfillCartBarcodes, 1000));
+    } else {
+      setTimeout(backfillCartBarcodes, 1000);
+    }
+  }
+
+  // TRIGGER 2: Cart updated event
+  document.addEventListener('cart:updated', () => setTimeout(backfillCartBarcodes, 500));
+
+  // TRIGGER 3: MutationObserver pentru cart drawer
+  const observer = new MutationObserver((mutations) => {
+    mutations.forEach((mutation) => {
+      mutation.addedNodes.forEach((node) => {
+        if (node.nodeType === 1 && node.classList && (
+          node.classList.contains('cart-drawer') || node.classList.contains('drawer') ||
+          node.id === 'cart-drawer' || node.querySelector('[data-cart-drawer]')
+        )) {
+          setTimeout(backfillCartBarcodes, 500);
+        }
+      });
+    });
+  });
+  observer.observe(document.body, { childList: true, subtree: true });
+
+  // TRIGGER 4: Click pe cart icon
+  document.addEventListener('click', (e) => {
+    if (e.target.closest('a[href="/cart"], a[href*="/cart"], [data-cart-button], .cart-icon, .header__icon--cart')) {
+      setTimeout(backfillCartBarcodes, 800);
+    }
+  });
+
+})();
+</script>
